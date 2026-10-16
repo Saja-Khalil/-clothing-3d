@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>تجربة الفستان على الأفاتار</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #e9e9ee; font-family: system-ui, sans-serif; }
+    #app { position: fixed; inset: 0; }
+    .panel {
+      position: fixed; top: 12px; background: #fff; padding: 12px 14px; border-radius: 10px;
+      box-shadow: 0 2px 10px rgba(0,0,0,.12); font-size: 14px; line-height: 1.7;
+    }
+    #view { right: 12px; }
+    #make { left: 12px; width: 300px; max-height: calc(100% - 48px); overflow: auto; }
+    #make h3 { margin: 0 0 6px; font-size: 16px; }
+    .side { border: 1px solid #ddd; border-radius: 8px; padding: 8px; margin-bottom: 8px; }
+    .side img { display: block; width: 100%; max-height: 140px; object-fit: contain; background: #f4f4f6; border-radius: 6px; margin-top: 6px; }
+    .row { display: flex; gap: 6px; }
+    button { font: inherit; padding: 6px 10px; border-radius: 6px; border: 1px solid #bbb; background: #f7f7f9; cursor: pointer; }
+    button.primary { background: #2d2a32; color: #fff; border-color: #2d2a32; width: 100%; margin-top: 6px; }
+    button:disabled { opacity: .5; cursor: default; }
+    label.num { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+    label.num input { width: 80px; font: inherit; }
+    .hint { color: #666; font-size: 12px; }
+    #status { margin-top: 6px; font-size: 13px; white-space: pre-wrap; }
+    #status.err { color: #b3261e; }
+    #camera { position: fixed; inset: 0; background: rgba(0,0,0,.85); display: none; flex-direction: column; align-items: center; justify-content: center; gap: 12px; }
+    #camera video { max-width: 92vw; max-height: 75vh; border-radius: 8px; background: #000; }
+  </style>
+  <script type="importmap">
+    { "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"
+    } }
+  </script>
+</head>
+<body>
+  <div id="app"></div>
+
+  <div id="view" class="panel">
+    <label><input type="checkbox" id="showDress" checked> إظهار الفستان</label><br>
+    <label><input type="checkbox" id="spin"> دوران تلقائي</label>
+    <div id="loadStatus" class="hint">جاري التحميل…</div>
+  </div>
+
+  <div id="make" class="panel">
+    <h3>فستان جديد</h3>
+    <div class="hint">الفستان ممدود على شرشف سادة، مصوّر من فوق، بلا فلاش، وكله بالصورة.</div>
+    <div class="side" data-side="front">
+      <b>صورة الأمام</b>
+      <div class="row"><button data-act="camera">📷 كاميرا</button><button data-act="file">📁 من الجهاز</button></div>
+      <img alt="" hidden>
+    </div>
+    <div class="side" data-side="back">
+      <b>صورة الخلف</b>
+      <div class="row"><button data-act="camera">📷 كاميرا</button><button data-act="file">📁 من الجهاز</button></div>
+      <img alt="" hidden>
+    </div>
+    <label class="num">الطول (سم)* <input id="lengthCm" type="number" value="130"></label>
+    <label class="num">عرض الكتف (سم)* <input id="shoulderCm" type="number" value="42"></label>
+    <label class="num">عرض الطرف (سم) <input id="hemCm" type="number" value="118"></label>
+    <label class="num">طول الكم (سم) <input id="sleeveCm" type="number" value="60"></label>
+    <label class="num">الكم مقاس من
+      <select id="sleeveFrom"><option value="neck">الرقبة</option><option value="shoulder">الكتف</option></select></label>
+    <button id="build" class="primary" disabled>اعمل الفستان</button>
+    <div id="status"></div>
+  </div>
+
+  <div id="camera">
+    <video autoplay playsinline muted></video>
+    <div class="row"><button id="shoot">📸 صوّري</button><button id="cancel">إلغاء</button></div>
+  </div>
+  <input id="filePick" type="file" accept="image/jpeg,image/png" hidden>
+
+  <script type="module">
+    import * as THREE from "three";
+    import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+    import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+
+    // ?models=a.glb,b.glb (paths relative to this page). The last one is the
+    // garment that the checkbox shows and hides.
+    const params = new URLSearchParams(location.search);
+    const models = (params.get("models") || "../output/avatar.glb,../output/dress01_flat.glb").split(",");
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    document.getElementById("app").appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0xe9e9ee);
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x8a8a99, 1.6));
+    const sun = new THREE.DirectionalLight(0xffffff, 1.8);
+    sun.position.set(1.5, 3, 2.5);
+    scene.add(sun);
+    const fill = new THREE.DirectionalLight(0xffffff, 0.7);
+    fill.position.set(-2, 1.5, -2);
+    scene.add(fill);
+
+    const floor = new THREE.Mesh(new THREE.CircleGeometry(1.2, 64), new THREE.MeshStandardMaterial({ color: 0xd4d4dc }));
+    floor.rotation.x = -Math.PI / 2;
+    scene.add(floor);
+
+    const camera = new THREE.PerspectiveCamera(35, 1, 0.05, 50);
+    camera.position.set(0, 1.1, 3.6);
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.target.set(0, 0.85, 0);
+    controls.enableDamping = true;
+
+    const loadStatus = document.getElementById("loadStatus");
+    const loader = new GLTFLoader();
+    let garment = null;
+    Promise.all(models.map((url) => loader.loadAsync(url)))
+      .then((loaded) => {
+        loaded.forEach((gltf) => scene.add(gltf.scene));
+        garment = loaded[loaded.length - 1].scene;
+
+        // Frame whatever was loaded.
+        const box = new THREE.Box3();
+        loaded.forEach((gltf) => box.expandByObject(gltf.scene));
+        const center = box.getCenter(new THREE.Vector3());
+        const size = box.getSize(new THREE.Vector3());
+        controls.target.copy(center);
+        camera.position.set(center.x, center.y + 0.1, center.z + size.y * 2.2);
+        loadStatus.textContent = "حرّكي بالماوس: سحب للدوران، عجلة للتكبير";
+      })
+      .catch((err) => { loadStatus.textContent = "خطأ بالتحميل: " + err.message; });
+
+    async function replaceGarment(url) {
+      const gltf = await loader.loadAsync(url);
+      if (garment) scene.remove(garment);
+      garment = gltf.scene;
+      garment.visible = document.getElementById("showDress").checked;
+      scene.add(garment);
+    }
+
+    document.getElementById("showDress").addEventListener("change", (e) => {
+      if (garment) garment.visible = e.target.checked;
+    });
+    document.getElementById("spin").addEventListener("change", (e) => {
+      controls.autoRotate = e.target.checked;
+    });
+
+    function resize() {
+      renderer.setSize(innerWidth, innerHeight);
+      camera.aspect = innerWidth / innerHeight;
+      camera.updateProjectionMatrix();
+    }
+    addEventListener("resize", resize);
+    resize();
+    renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
+
+    // ---------- New dress: photos from the camera or a file ----------
+    const photos = { front: null, back: null };  // data URLs
+    const status = document.getElementById("status");
+    const build = document.getElementById("build");
+    const camBox = document.getElementById("camera");
+    const video = camBox.querySelector("video");
+    const filePick = document.getElementById("filePick");
+    let target = null;  // which side the next photo is for
+    let stream = null;
+
+    function setStatus(text, error = false) {
+      status.textContent = text;
+      status.className = error ? "err" : "";
+    }
+
+    function setPhoto(side, dataUrl) {
+      photos[side] = dataUrl;
+      const img = document.querySelector(`.side[data-side="${side}"] img`);
+      img.src = dataUrl;
+      img.hidden = false;
+      build.disabled = !(photos.front && photos.back);
+    }
+
+    // Phones take 12+ megapixel photos; 2048 px is all the pipeline uses.
+    function shrink(source, width, height) {
+      const scale = Math.min(1, 2048 / Math.max(width, height));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(width * scale);
+      canvas.height = Math.round(height * scale);
+      canvas.getContext("2d").drawImage(source, 0, 0, canvas.width, canvas.height);
+      return canvas.toDataURL("image/jpeg", 0.92);
+    }
+
+    document.querySelectorAll(".side button").forEach((button) => {
+      button.addEventListener("click", async () => {
+        target = button.closest(".side").dataset.side;
+        if (button.dataset.act === "file") {
+          filePick.value = "";
+          filePick.click();
+          return;
+        }
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: "environment", width: { ideal: 1920 }, height: { ideal: 1080 } },
+          });
+          video.srcObject = stream;
+          camBox.style.display = "flex";
+        } catch (err) {
+          setStatus("ما قدرت أفتح الكاميرا: " + err.message, true);
+        }
+      });
+    });
+
+    filePick.addEventListener("change", () => {
+      const file = filePick.files[0];
+      if (!file) return;
+      const img = new Image();
+      img.onload = () => { setPhoto(target, shrink(img, img.naturalWidth, img.naturalHeight)); URL.revokeObjectURL(img.src); };
+      img.onerror = () => setStatus("هاد الملف مش صورة JPEG أو PNG.", true);
+      img.src = URL.createObjectURL(file);  // the browser applies the photo's rotation
+    });
+
+    function stopCamera() {
+      if (stream) stream.getTracks().forEach((t) => t.stop());
+      stream = null;
+      camBox.style.display = "none";
+    }
+    document.getElementById("shoot").addEventListener("click", () => {
+      setPhoto(target, shrink(video, video.videoWidth, video.videoHeight));
+      stopCamera();
+    });
+    document.getElementById("cancel").addEventListener("click", stopCamera);
+
+    build.addEventListener("click", async () => {
+      const body = { front: photos.front, back: photos.back, sleeveFrom: document.getElementById("sleeveFrom").value };
+      for (const key of ["lengthCm", "shoulderCm", "hemCm", "sleeveCm"]) body[key] = document.getElementById(key).value;
+      build.disabled = true;
+      setStatus("بنرفع الصور…");
+      try {
+        const res = await fetch("/api/jobs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        const job = await res.json();
+        if (!res.ok) throw new Error(job.error);
+        const started = Date.now();
+        for (;;) {
+          await new Promise((r) => setTimeout(r, 3000));
+          const state = await (await fetch(`/api/jobs/${job.id}`)).json();
+          const secs = Math.round((Date.now() - started) / 1000);
+          if (state.status === "queued") setStatus(`مستني دوره… (${secs} ث)`);
+          else if (state.status === "running") setStatus(`عم يبني الفستان، بياخد 3–4 دقايق… (${secs} ث)`);
+          else if (state.status === "done") {
+            await replaceGarment(state.glb);
+            setStatus("جاهز ✓ الفستان الجديد على الأفاتار.");
+            break;
+          } else {
+            throw new Error((state.photoProblem ? "مشكلة بالصورة — " : "") + state.error);
+          }
+        }
+      } catch (err) {
+        setStatus("ما زبط: " + err.message, true);
+      } finally {
+        build.disabled = !(photos.front && photos.back);
+      }
+    });
+  </script>
+</body>
+</html>
