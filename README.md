@@ -64,7 +64,9 @@ Jobs run inside the server, so libraries and models stay loaded. The cloth simul
 | `dress3d/` | Baraah's Dress3D library (from her `clothes` repo), with fixes: no matplotlib, back-photo mask, the avatar's sleeve angle, stops once the length settles (62 s → 21 s) |
 | `viewer/index.html` | The fitting room page (three.js) |
 | `tests/` | `test_measure_photo.py` (each kind on drawn masks, tape rescaling), `test_dress3d.py` |
-| `newavatar-changes/` | Changes made to the avatar module (Baraah's repo, not pushed there): `newavatar.patch` plus new files. Body style (athletic), tape-style chest/hip, the try-on buttons, start scripts |
+| `newavatar-changes/` | Changes to the avatar module: every changed or new file as it is now, and `newavatar.patch` (the edits as a diff). Body style (athletic), tape-style chest/hip, the try-on and 3D-dress buttons, start scripts |
+| `dress3d-prototype/` | The Dress3D app: a dress from its photo and measurements, alone in 3D (port 8765; the **🧵 شوفي الفستان 3D** button). Run: `pip install -r requirements-py311.txt` (Python 3.11), `npm ci && npm run build` in `prototype/web`, then `python prototype/server.py` |
+| `tools/ui_test.py` | Drives the fitting room in Edge (Playwright) like a user: dress, skirt, accessories; screenshots each step |
 
 ```
 .venv\Scripts\python.exe -m unittest tests.test_measure_photo tests.test_dress3d
