@@ -31,7 +31,12 @@ MASK_BORDER = 0.15
 
 
 class PhotoError(ValueError):
-    """The photo cannot be used; the message says why and what to change."""
+    """The photo cannot be used; the message says why and what to change.
+    `code` names the problem for pages that word it in their own language."""
+
+    def __init__(self, message, code="shape"):
+        super().__init__(message)
+        self.code = code
 
 
 def load_photo(path_or_file):
@@ -62,7 +67,7 @@ def clean_mask(mask):
     opened = ndimage.binary_opening(mask, structure=np.ones((3, 3)), iterations=MASK_OPEN_PX)
     labels, count = ndimage.label(opened)
     if count == 0:
-        raise PhotoError("No garment found in the photo.")
+        raise PhotoError("No garment found in the photo.", "no_garment")
     sizes = ndimage.sum(opened, labels, range(1, count + 1))
     keep = labels == (int(np.argmax(sizes)) + 1)
     # Give back the edge the opening took, but only next to the kept piece.
@@ -73,13 +78,15 @@ def clean_mask(mask):
     if not MASK_AREA[0] <= area <= MASK_AREA[1]:
         raise PhotoError(
             f"The garment covers {area:.0%} of the photo: either the background was taken for "
-            "the garment or the garment was missed. Lay it on a plain sheet and fill most of the picture."
+            "the garment or the garment was missed. Lay it on a plain sheet and fill most of the picture.",
+            "garment_area",
         )
     border = np.concatenate([keep[0], keep[-1], keep[:, 0], keep[:, -1]]).mean()
     if border > MASK_BORDER:
         raise PhotoError(
             f"The garment touches {border:.0%} of the photo's edge: step back so all of it, "
-            "with a little space around it, is in the picture."
+            "with a little space around it, is in the picture.",
+            "garment_border",
         )
     return keep
 
@@ -160,7 +167,7 @@ def find_armpit(mask, center_x, side, start, stop, min_run):
         if outside:
             gap = (outside[-1][1], b0) if side == "left" else (b1, outside[0][0])
             return np.array([(gap[0] + gap[1]) / 2, float(r)])
-    raise PhotoError(f"Could not find the {side} armpit: lay the sleeves a little away from the body.")
+    raise PhotoError(f"Could not find the {side} armpit: lay the sleeves a little away from the body.", "armpit")
 
 
 def measure_sleeve(mask, center_x, shoulder, armpit, side):
@@ -175,20 +182,18 @@ def measure_sleeve(mask, center_x, shoulder, armpit, side):
     beyond = (pts - shoulder) @ normal > 0
     # Below the armpit the body is the run through the centre; the sleeve is
     # what lies clear of it.
-    in_body = np.zeros(len(pts), bool)
-    for r in np.unique(pts[:, 1]).astype(int):
-        if r <= armpit[1]:
-            continue
+    body_img = np.zeros(mask.shape, bool)
+    for r in range(int(armpit[1]) + 1, mask.shape[0]):
         body = [run for run in row_runs(mask[r], 3) if run[0] <= center_x <= run[1]]
         if body:
-            sel = pts[:, 1] == r
-            in_body[sel] = (pts[sel, 0] >= body[0][0]) & (pts[sel, 0] <= body[0][1])
+            body_img[r, body[0][0]:body[0][1] + 1] = True
+    in_body = body_img[pts[:, 1].astype(int), pts[:, 0].astype(int)]
     sleeve = pts[beyond & ~in_body]
     labels = np.zeros(mask.shape, bool)
     labels[sleeve[:, 1].astype(int), sleeve[:, 0].astype(int)] = True
     lab, n = ndimage.label(labels)
     if n == 0:
-        raise PhotoError(f"No {side} sleeve found.")
+        raise PhotoError(f"No {side} sleeve found.", "sleeve")
     sizes = ndimage.sum(labels, lab, range(1, n + 1))
     keep = lab == (int(np.argmax(sizes)) + 1)
     ys, xs = np.nonzero(keep)
@@ -219,10 +224,10 @@ def measure_sleeve(mask, center_x, shoulder, armpit, side):
                       np.array(s), ndimage.median_filter(np.array(lo), 5), ndimage.median_filter(np.array(hi), 5))
 
 
-def analyze_flat(image, session, length_cm, shoulder_cm):
+def analyze_flat(image, session, length_cm, shoulder_cm, mask=None):
     """Layout and mask of a flat-laid garment, or PhotoError saying what to
-    change in the photo."""
-    mask = find_garment(image, session)
+    change in the photo. mask: the garment's mask when it is already known."""
+    mask = clean_mask(mask) if mask is not None else find_garment(image, session)
     try:
         return _analyze_mask(mask, length_cm, shoulder_cm)
     except PhotoError:

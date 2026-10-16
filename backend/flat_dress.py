@@ -58,12 +58,13 @@ SLEEVE_CAP_SOURCE_CM = 2.0  # the sleeve head takes the fabric this far down the
 PATCHED_ABOVE_CM = 4.0
 SLEEVE_PATCHED_CM = 3.0  # past the sleeve seam
 REFLECT_CM = 6.0
+EDGE_INSET_CM = 1.5  # the photo's outline is shaded or mixed with the background: sample this far inside
 COLLAR_RUFFLE_AT_M = -0.028  # height of the ruffle's base: above the shoulder line, at the collar stand
 SHOULDER_SLOPE_M = 0.03  # the shoulders rise this much from the shoulder points to the collar stand
 NECK_HALF_M = 0.065  # half-width of the collar stand
 # Soft folds that fall over the chest, with a gently wavy edge (not a zigzag).
 # A ruff round the collar stand that lies outwards over the shoulders, with a few big loose waves.
-COLLAR_RUFFLE_FLAT = dict(width=0.035, drop=0.03, waves=9, wave=0.014, rings=10, around=240, flute=0.8, edge=0.9)
+COLLAR_RUFFLE_FLAT = dict(width=0.032, drop=0.032, waves=16, wave=0.009, rings=12, around=320, flute=1.0, edge=0.35)
 
 
 # ---------------------------------------------------------------------------
@@ -254,7 +255,9 @@ def body_uvs(rings, levels, ds_cm, offsets, atlas_size):
             frac = ring_fractions(ring, order)
             pts_ring = ring[order % AROUND]
             dress_cm = np.linalg.norm(np.diff(pts_ring, axis=0), axis=1).sum() * 100
-            keep = min(1.0, dress_cm / (ring_length_open(curve) / levels[half].ppc))
+            open_len = ring_length_open(curve)
+            keep = min(1.0, dress_cm / (open_len / levels[half].ppc))
+            keep = min(keep, max(0.0, 1 - 2 * EDGE_INSET_CM * levels[half].ppc / open_len))
             pts = curve_point(curve, 0.5 + (frac - 0.5) * keep)
             table[i, order] = to_uv(pts, offsets[half], atlas_size)
             if i == first:
@@ -310,24 +313,49 @@ def main():
     parser.add_argument("--sleeve-from", choices=("shoulder", "neck"), default="shoulder",
                         help="where the sleeve tape started: the shoulder seam, or the side of the neck "
                              "(then the shoulder seam's distance from the neck is taken off)")
-    parser.add_argument("--frames", type=int, default=60)
+    parser.add_argument("--frames", type=int, default=20,
+                        help="cloth simulation frames (20 is ~15 s; 60 settles a wide skirt a little more)")
+    parser.add_argument("--collar-ruffle", action="store_true", help="add a ruffle around the collar stand")
+    parser.add_argument("--cuff-ruffle", action="store_true", help="add ruffle tiers at the cuffs")
     parser.add_argument("--name", required=True)
     parser.add_argument("--out", default="output")
     args = parser.parse_args()
+    try:
+        info = run(args)
+    except PhotoError as error:
+        raise SystemExit(f"PHOTO_ERROR {error}")
+    print(json.dumps(info, indent=2))
 
-    from rembg import new_session
 
+def options(**kw):
+    """Arguments for run() without the command line (the server's jobs)."""
+    defaults = dict(hem_cm=None, sleeve_cm=None, sleeve_from="shoulder", frames=20,
+                    collar_ruffle=False, cuff_ruffle=False, out="output")
+    return argparse.Namespace(**{**defaults, **kw})
+
+
+def run(args, session=None, masks=None):
+    """Build the dress and put it on the avatar; returns the info dict.
+    masks: {"front": bool array, "back": ...} of the photos as given (they are
+    then not cut out again). Raises PhotoError ("front: ..." / "back: ...")."""
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    session = new_session("u2net")
+    if session is None and not masks:
+        from rembg import new_session
+
+        session = new_session("u2net")
     photos, layouts, levels, texture = {}, {}, {}, {}
     for half, path in (("front", args.front), ("back", args.back)):
         image = load_photo(path)
         photos[half] = np.asarray(image)
         try:
-            layouts[half], mask = analyze_flat(image, session, args.length_cm, args.shoulder_cm)
+            given = None
+            if masks and half in masks:
+                given = np.asarray(Image.fromarray(np.asarray(masks[half], np.uint8) * 255).resize(
+                    image.size, Image.NEAREST)) > 127
+            layouts[half], mask = analyze_flat(image, session, args.length_cm, args.shoulder_cm, mask=given)
         except PhotoError as error:
-            raise SystemExit(f"PHOTO_ERROR {half}: {error}")
+            raise PhotoError(f"{half}: {error}", error.code) from error
         draw_flat(image, layouts[half], out / f"{args.name}_{half}_flat.png")
         levels[half] = FlatLevels(layouts[half])
         texture[half] = fill_background(photos[half], mask)
@@ -396,21 +424,23 @@ def main():
         head = int(np.argmax(us >= seam + SLEEVE_PATCHED_CM / 100))
         uvs[name] = sleeve_uvs(rings, s_px, sleeves, {h: layouts[h].px_per_cm for h in sleeves}, head,
                                offsets, atlas_size)
-        for k, tier in enumerate(tiers):
-            ruffles[f"{name}_cuff{k}"] = tier
+        if args.cuff_ruffle:
+            for k, tier in enumerate(tiers):
+                ruffles[f"{name}_cuff{k}"] = tier
 
-    # Collar ruffle: around the base of the high collar, falling outwards over
-    # the shoulders and chest, as in the photos.
+    # Collar ruffle (when the garment has one): around the base of the high
+    # collar, falling outwards over the shoulders and chest.
     ys = frame.shoulder_y - ds
-    neck = body[int(np.argmin(np.abs(ds - COLLAR_RUFFLE_AT_M)))]
-    center = neck.mean(axis=0)
-    rel = neck - center
-    neck_angles = np.arctan2(rel[:, 2], rel[:, 0]) % (2 * np.pi)
-    order = np.argsort(neck_angles)
-    neck_r = np.linalg.norm(rel[:, [0, 2]], axis=1)[order]
-    ruffles["collar"] = frill(
-        center, lambda a: np.interp(a, neck_angles[order], neck_r, period=2 * np.pi) + 0.004,
-        np.array([1.0, 0, 0]), np.array([0, 0, 1.0]), np.array([0, -1.0, 0]), **COLLAR_RUFFLE_FLAT)
+    if args.collar_ruffle:
+        neck = body[int(np.argmin(np.abs(ds - COLLAR_RUFFLE_AT_M)))]
+        center = neck.mean(axis=0)
+        rel = neck - center
+        neck_angles = np.arctan2(rel[:, 2], rel[:, 0]) % (2 * np.pi)
+        order = np.argsort(neck_angles)
+        neck_r = np.linalg.norm(rel[:, [0, 2]], axis=1)[order]
+        ruffles["collar"] = frill(
+            center, lambda a: np.interp(a, neck_angles[order], neck_r, period=2 * np.pi) + 0.004,
+            np.array([1.0, 0, 0]), np.array([0, 0, 1.0]), np.array([0, -1.0, 0]), **COLLAR_RUFFLE_FLAT)
 
     data = {"parts": np.array(list(parts) + list(ruffles))}
     for name, rings in {**parts, **ruffles}.items():
@@ -442,13 +472,15 @@ def main():
         "--fabric", str(atlas_path.resolve()), "--trim", ",".join(f"{v:.3f}" for v in trim_rgb),
         "--frames", str(args.frames),
         "--out", str(glb.resolve()), "--out-with-avatar", str((out / f"{args.name}_on_avatar.glb").resolve()),
-    ], check=True)
+    ], check=True, capture_output=True)
 
     info = {
         "name": args.name,
         "modelSource": "template_parametric",
         "generationTool": "flat_dress.py (sizes from flat-lay photos, photos as texture, "
-                          "template ruffles, Blender cloth simulation)",
+                          + ("template ruffles, " if args.collar_ruffle or args.cuff_ruffle else "")
+                          + "Blender cloth simulation)",
+        "ruffles": {"collar": args.collar_ruffle, "cuff": args.cuff_ruffle},
         "generatedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "photos": {"front": str(args.front), "back": str(args.back)},
         "avatar": str(args.avatar),
@@ -464,7 +496,7 @@ def main():
         },
     }
     (out / f"{args.name}.json").write_text(json.dumps(info, indent=2), encoding="utf-8")
-    print(json.dumps(info, indent=2))
+    return info
 
 
 if __name__ == "__main__":

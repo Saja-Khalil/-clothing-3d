@@ -3,50 +3,91 @@
 Part of the virtual-fitting graduation project. On the working machine this folder lives at
 `C:\Users\hp\NewAvatar\clothing`, next to Baraah's avatar module.
 
-A photo of a garment → a 3D dress (GLB) on the avatar. Everything runs locally; no photo is sent to an online
-service. The shape comes from a dress template sized by the photos and tape measurements, the look from the
-photos themselves, and the drape from Blender's cloth simulation (`modelSource: "template_parametric"`).
+A photo of a garment → the garment in 3D (GLB) on the user's avatar. Everything runs locally; no photo is sent
+to an online service. The shape comes from templates sized by the photo, the look from the photos themselves, and
+the drape from Blender's cloth simulation (`modelSource: "template_parametric"`). Accessories are ready-made
+shapes sized and coloured from their photo, and the page says so.
 
-## Current method: flat-lay photos
-
-Lay the dress on a plain sheet, shoot it from straight above (front, then back), and measure its length and shoulder
-width with a tape.
+## The fitting room (غرفة القياس)
 
 ```
-cd C:\Users\hp\NewAvatar\clothing
-.venv\Scripts\python.exe backend\flat_dress.py --avatar output\avatar.glb ^
-    --front samples\flat_front.jpg --back samples\flat_back.jpg ^
-    --length-cm 130 --shoulder-cm 42 --hem-cm 118 --sleeve-cm 60 --sleeve-from neck --name dress01_flat
+.venv\Scripts\python.exe backend\server.py        (or start_avatar.bat, which starts everything)
 ```
+then open `http://127.0.0.1:8010/viewer/?avatar=<avatar_id>`. The avatar page's **👗 جرّبي الملابس** button
+opens it with the avatar just made.
 
-Needs Blender 4.2 LTS at `C:\Users\hp\tools\blender-4.2.23-windows-x64` (path in `backend/template_dress.py`).
-Takes 3–7 minutes on an 8 GB laptop.
+1. **The piece:** dress/abaya, top, skirt, trousers, scarf, or an accessory (bag, belt, hat, glasses, necklace).
+2. **Photos:** one or more, each tagged front / back / detail (camera, file or drag and drop).
+3. **Measurements:** measured automatically from the photo (`backend/measure_photo.py`), drawn on it, and
+   editable. Widths are shown laid flat, the way a tape measures a garment on a table.
+4. **Wear it:** the garment is built and draped on the avatar. **خزانتي** (wardrobe) keeps every piece,
+   and several can be worn together. **القطعة لحالها** hides the avatar to see the piece alone.
 
-### Shop page (camera or file upload)
+### Measuring without a reference
 
-```
-.venv\Scripts\python.exe backend\server.py
-```
-then open `http://127.0.0.1:8010/viewer/`. Each request gets its own folder `jobs/<uuid>/` (not in Git).
+A photo alone has no absolute size: a small dress close to the camera looks the same as a big one further away.
+So `measure_photo.py`:
+- reads every proportion from the photo;
+- takes the scale from the dimension that varies least between sizes: the shoulder width of dresses and tops
+  (women's 37–43 cm, about ±7 %), the waist of skirts and trousers, the length of a scarf;
+- reports the result as an estimate, with its uncertainty.
+
+One optional tape measurement (`POST /api/scale`) makes every other measurement exact. Collar and cuff ruffles are
+detected from their contrasting colour.
+
+### Speed (8 GB laptop)
+
+| Piece | Time |
+| --- | --- |
+| Dress (from 3.5 min) | ~30 s |
+| Skirt | ~11 s |
+| Trousers | ~23 s |
+| Scarf | ~8 s |
+| Accessory | immediate |
+
+Jobs run inside the server, so libraries and models stay loaded. The cloth simulation uses 20 frames.
 
 ## Files
 
 | File | What it does |
 | --- | --- |
-| `backend/flat_dress.py` | Main script: flat-lay photos + measurements → draped GLB |
-| `backend/flat_lay.py` | Reads a flat-laid garment: collar, shoulders, armpits, sleeves, hem, scale; rejects unusable photos |
+| `backend/server.py` | Local server: `/api/measure`, `/api/scale`, `/api/jobs` (method `garment`), `/api/avatar-frame/<id>`, `/avatars/<id>.glb` |
+| `backend/measure_photo.py` | Automatic measurements of any kind from one flat-lay photo |
+| `backend/flat_dress.py` | Dresses and tops with sleeves: photos + measurements → draped GLB (`run()` is called by the server) |
+| `backend/garment_kinds.py` | Skirts, trousers and scarves: rings sized from the photos, photo texture, cloth simulation |
+| `backend/dress_on_avatar.py` | Sleeveless dresses: Dress3D panels from measurements, placed on the avatar |
+| `backend/flat_lay.py` | Reads a flat-laid garment: collar, shoulders, armpits, sleeves, hem |
 | `backend/template_dress.py` | Template parts: sleeves, ruffles (collar, cuffs), skirt folds |
-| `backend/blender_drape.py` | Runs inside Blender: cloth simulation (tweed settings), GLB export (Y up) |
+| `backend/blender_drape.py` | Runs inside Blender: cloth simulation, light smoothing, GLB export |
 | `backend/blender_render.py` | Runs inside Blender: front / 35° / side / back renders |
-| `backend/server.py` | Local server for the shop page: uploads, one job at a time |
-| `backend/photo_to_garment.py` | Background removal (rembg u2net) and avatar measuring, shared; also the first, photo-projected version |
-| `backend/photo_to_hanger.py` | Earlier attempt: the dress on a hanger, from photos against a wall |
-| `backend/render_preview.py` | Quick CPU preview of a GLB (no Blender) |
-| `viewer/index.html` | three.js viewer + "new dress" panel (camera / file, measurements) |
-| `samples/flat_front.jpg`, `samples/flat_back.jpg` | Input photos of dress01 |
-| `results/` | Final outputs kept in Git (see below) |
+| `backend/photo_to_garment.py` | Background removal (rembg u2net) and avatar measuring, shared |
+| `dress3d/` | Baraah's Dress3D library (from her `clothes` repo), with fixes: no matplotlib, back-photo mask, the avatar's sleeve angle, stops once the length settles (62 s → 21 s) |
+| `viewer/index.html` | The fitting room page (three.js) |
+| `tests/` | `test_measure_photo.py` (each kind on drawn masks, tape rescaling), `test_dress3d.py` |
+| `newavatar-changes/` | Changes made to the avatar module (Baraah's repo, not pushed there): `newavatar.patch` plus new files. Body style (athletic), tape-style chest/hip, the try-on buttons, start scripts |
 
-`output/` holds every intermediate result and is not in Git.
+```
+.venv\Scripts\python.exe -m unittest tests.test_measure_photo tests.test_dress3d
+```
+
+Needs Blender 4.2 LTS at `C:\Users\hp\tools\blender-4.2.23-windows-x64` (path in `backend/template_dress.py`).
+`jobs/`, `uploads/` and `output/` hold every request's files and are not in Git.
+
+### Command line (flat-lay photos with tape measurements)
+
+```
+.venv\Scripts\python.exe backend\flat_dress.py --avatar output\avatar.glb ^
+    --front samples\flat_front.jpg --back samples\flat_back.jpg ^
+    --length-cm 130 --shoulder-cm 42 --hem-cm 118 --sleeve-cm 60 --sleeve-from neck ^
+    --collar-ruffle --cuff-ruffle --name dress01_flat
+```
+
+## Known limits
+
+- Sizes without a tape measurement are estimates (see above).
+- Puffed shoulders are not modelled.
+- The scarf drapes stiffly.
+- Garments worn together do not collide with each other.
 
 ## Results in Git (`results/`)
 
@@ -63,7 +104,7 @@ then open `http://127.0.0.1:8010/viewer/`. Each request gets its own folder `job
 `avatar/athletic_female_preview.py` fits an adult, athletic female body: age 0.67–0.8, muscle 0.55–0.72,
 narrower shoulders, slimmer hips and legs, natural bust (Anny cup size 0.62). It runs inside Baraah's avatar module
 (it imports its fit and measurement code), so copy it to `NewAvatar/backend/tools/` and run it from `backend/` with
-the avatar `.venv`. It does not change her production fit or API.
+the avatar `.venv`.
 
 ## Reports
 

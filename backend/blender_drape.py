@@ -78,16 +78,18 @@ def add_buttons(dress, depths, shoulder_y, material):
     return buttons
 
 
-def build_part(name, rings, uv_front, uv_back, trim, pin):
+def build_part(name, rings, uv_front, uv_back, trim, pin, closed=True):
     """A closed tube from rings (n, around, 3) as one mesh, with material 1 on
     the trim rings and a "pin" vertex group. uv_front/uv_back (n, around + 1, 2)
     give the photo texture on the front half (ring positions around/4 to
-    3*around/4) and the back half; without them the part is all trim."""
+    3*around/4) and the back half; without them the part is all trim.
+    closed=False: an open sheet (a scarf), rows of points instead of rings,
+    textured all over from uv_front."""
     n, around = rings.shape[:2]
     verts = to_blender(rings).reshape(-1, 3)
     faces, face_trim = [], []
     for i in range(n - 1):
-        for j in range(around):
+        for j in range(around if closed else around - 1):
             k = (j + 1) % around
             faces.append((i * around + j, (i + 1) * around + j, (i + 1) * around + k, i * around + k))
             face_trim.append(bool(trim[i] and trim[i + 1]))
@@ -96,12 +98,13 @@ def build_part(name, rings, uv_front, uv_back, trim, pin):
 
     uv = mesh.uv_layers.new(name="UVMap")
     q = around // 4
+    per_row = around if closed else around - 1
     for f, poly in enumerate(mesh.polygons):
-        i, j = divmod(f, around)
+        i, j = divmod(f, per_row)
         poly.material_index = 1 if face_trim[f] or uv_front is None else 0
         if uv_front is None:
             continue
-        table = uv_front if q <= j < 3 * q else uv_back
+        table = uv_front if not closed or q <= j < 3 * q else uv_back
         corners = ((i, j), (i + 1, j), (i + 1, j + 1), (i, j + 1))
         for loop_index, (ri, cj) in zip(poly.loop_indices, corners):
             uv.data[loop_index].uv = tuple(table[ri, cj])
@@ -109,6 +112,12 @@ def build_part(name, rings, uv_front, uv_back, trim, pin):
     obj = bpy.data.objects.new(name, mesh)
     bpy.context.collection.objects.link(obj)
     group = obj.vertex_groups.new(name="pin")
+    if pin.ndim == 2:  # a weight per vertex (n, around)
+        for i in range(n):
+            for j in range(around):
+                if pin[i, j] > 0:
+                    group.add([i * around + j], float(pin[i, j]), "REPLACE")
+        return obj
     for i in range(n):
         if pin[i] > 0:
             group.add(list(range(i * around, (i + 1) * around)), float(pin[i]), "REPLACE")
@@ -136,8 +145,9 @@ def main():
     parts = []
     for name in [str(n) for n in rest["parts"]]:
         textured = name + "_uvf" in rest
+        closed = bool(rest[name + "_closed"]) if name + "_closed" in rest else True
         obj = build_part(name, rest[name], rest[name + "_uvf"] if textured else None,
-                         rest[name + "_uvb"] if textured else None, rest[name + "_trim"], rest[name + "_pin"])
+                         rest[name + "_uvb"] if textured else None, rest[name + "_trim"], rest[name + "_pin"], closed)
         obj.data.materials.append(fabric)
         obj.data.materials.append(trim)
         parts.append(obj)
@@ -178,6 +188,17 @@ def main():
     bpy.ops.ptcache.free_bake_all()  # nothing of the simulation cache stays in the file
     dress.modifiers.clear()
     dress.data = draped
+    pin_index = dress.vertex_groups["pin"].index
+    free = dress.vertex_groups.new(name="free")
+    free.add([v.index for v in dress.data.vertices
+              if all(g.group != pin_index or g.weight < 0.5 for g in v.groups)], 1.0, "REPLACE")
+    smooth = dress.modifiers.new("smooth", "LAPLACIANSMOOTH")
+    smooth.lambda_factor = 0.4
+    smooth.iterations = 3
+    smooth.use_volume_preserve = True
+    smooth.vertex_group = "free"
+    bpy.context.view_layer.objects.active = dress
+    bpy.ops.object.modifier_apply(modifier="smooth")
     for poly in dress.data.polygons:
         poly.use_smooth = True
     bpy.data.objects.remove(floor)
